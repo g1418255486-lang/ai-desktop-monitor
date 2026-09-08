@@ -139,8 +139,7 @@ class StatusHud(QWidget):
         return self._slots_top() + self._slots * SLOT_H + (self._slots - 1) * SLOT_GAP + 6 + FOOT_H
 
     def _quota_content_h(self):
-        """额度内容高（不含常驻折叠条）。行高常量与 _paint_quota_bar 共用，
-        首行上边距 2 与绘制起点（_status_h() + M + 2）保持一致。"""
+        """顶部额度内容高（画在 y=M 起）。行高常量与 _paint_quota_bar 共用。"""
         h = 2
         q = self._quota
         if self._has_quota_data():
@@ -170,11 +169,17 @@ class StatusHud(QWidget):
             notes.append(f"DSH: {dsh['error']}")
         return notes
 
+    def _offset(self):
+        """展开时状态区整体下移量 = 顶部额度内容高度。
+
+        额度内容画在面板最顶部：窗口顶边向上扩展（底边锚定），
+        状态区与折叠条在窗口内偏移同步下移 → 两者屏幕绝对位置
+        在展开/收起时纹丝不动，按钮永远不会"跑"。"""
+        return self._quota_content_h() if self._quota_open else 0
+
     def _recalc_size(self):
-        # 折叠条常驻头部下方；展开时在面板底部叠加额度内容
-        h = self._status_h() + M
-        if self._quota_open:
-            h += self._quota_content_h()
+        # 展开时顶部叠加额度内容（底边锚定向上扩展），状态区下移补偿
+        h = self._offset() + self._status_h() + M
         old_h = self.height()
         self.setFixedSize(HUD_W, h)
         # 底边锚定：高度变化时顶边向上/向下补偿，
@@ -212,12 +217,12 @@ class StatusHud(QWidget):
             p.drawLine(0, y, w, y)
         p.restore()
 
-        self._paint_header(p)
+        if self._quota_open:
+            self._paint_quota_content(p)   # 展开内容画在面板最顶部
+        self._paint_header(p)              # 以下全部带 offset：屏幕位置不随展开变化
         self._paint_quota_toggle(p)
         self._paint_slots(p)
         self._paint_footer(p)
-        if self._quota_open:
-            self._paint_quota_content(p)   # 展开内容在面板底部，槽位不跳动
         p.end()
 
     @staticmethod
@@ -233,7 +238,8 @@ class StatusHud(QWidget):
         return path
 
     def _paint_header(self, p):
-        rect = QRectF(M, M, HUD_W - 2 * M, HEAD_H - 8)
+        off = self._offset()
+        rect = QRectF(M, M + off, HUD_W - 2 * M, HEAD_H - 8)
 
         p.setFont(_mono_font(11, QFont.Weight.Bold, 130))
         p.setPen(QColor(TEXT_HEADING))
@@ -249,12 +255,12 @@ class StatusHud(QWidget):
                    f"◉ {_TAG.get(overall, '--')}")
 
         p.setPen(QPen(QColor(FAINT), 1))
-        dy = M + HEAD_H - 3
+        dy = M + off + HEAD_H - 3
         p.drawLine(M, dy, HUD_W - M, dy)
 
     def _paint_slots(self, p):
         sessions = self._sessions()
-        top = self._slots_top()
+        top = self._slots_top() + self._offset()
         for i in range(self._slots):
             y = top + i * (SLOT_H + SLOT_GAP)
             rect = QRectF(M, y, HUD_W - 2 * M, SLOT_H)
@@ -343,7 +349,7 @@ class StatusHud(QWidget):
 
         f9 = _mono_font(9)
         p.setFont(f9)
-        rect = QRectF(M, self._status_h() - FOOT_H + 3, HUD_W - 2 * M, FOOT_H)
+        rect = QRectF(M, self._status_h() + self._offset() - FOOT_H + 3, HUD_W - 2 * M, FOOT_H)
         p.setPen(QColor(DIM))
         p.drawText(rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                    f":: OC {oc} · DSH {dsh}")
@@ -355,8 +361,8 @@ class StatusHud(QWidget):
     # ─── 额度区 ───
 
     def _paint_quota_toggle(self, p):
-        """折叠条（按钮）：头部正下方常驻。▾ QUOTA / ▸ QUOTA + 5h%"""
-        y = self._toggle_top()
+        """折叠条（按钮）：头部正下方常驻（含 offset 后屏幕位置固定）。▾/▸ QUOTA + 5h%"""
+        y = self._toggle_top() + self._offset()
         toggle = QRectF(M, y, HUD_W - 2 * M, QUOTA_TOGGLE_H)
         self._quota_toggle_rect = toggle
         p.setPen(Qt.PenStyle.NoPen)
@@ -376,8 +382,8 @@ class StatusHud(QWidget):
                        f"{q.token_5h_pct:.0f}%")
 
     def _paint_quota_content(self, p):
-        """展开内容：面板底部（footer 之后），槽位位置不跳动。"""
-        y = self._status_h() + M + 2
+        """展开内容：面板最顶部（窗口向上长出的部分）。"""
+        y = M
         q = self._quota
 
         if not self._has_quota_data():
