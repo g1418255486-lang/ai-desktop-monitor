@@ -58,13 +58,18 @@ SLOT_H = 28   # 槽高
 SLOT_GAP = 4  # 槽距
 FOOT_H = 18   # 状态底部计数高
 HUD_W = 248   # 面板宽
-CORNER = 10   # 右上切角尺寸
+CORNER = 10   # 右上切角尺寸（状态面板）
 
 QUOTA_TOGGLE_H = 20   # 额度折叠条高
 Q_ROW_LABEL = 14      # 额度档：标签/百分比行高
 Q_ROW_BAR = 8         # 额度档：进度条高
 Q_ROW_RESET = 11      # 额度档：重置时间行高
 Q_SEGMENTS = 24       # 进度条分段数
+
+# ─── 双面板堆叠 ───
+GAP = 7           # 两面板间透明缝隙（含能量连接线）
+QUOTA_INSET = 7   # 额度面板水平内缩（与状态面板错位，全息堆叠感）
+PANEL_BG_2 = "#0e1615"   # 额度面板底色（比状态面板微亮偏青）
 
 
 class StatusHud(QWidget):
@@ -169,16 +174,19 @@ class StatusHud(QWidget):
             notes.append(f"DSH: {dsh['error']}")
         return notes
 
-    def _offset(self):
-        """展开时状态区整体下移量 = 顶部额度内容高度。
+    def _quota_panel_h(self):
+        """额度面板自身高度（独立窗口感的一整块）。"""
+        return self._quota_content_h() + M
 
-        额度内容画在面板最顶部：窗口顶边向上扩展（底边锚定），
-        状态区与折叠条在窗口内偏移同步下移 → 两者屏幕绝对位置
-        在展开/收起时纹丝不动，按钮永远不会"跑"。"""
-        return self._quota_content_h() if self._quota_open else 0
+    def _offset(self):
+        """展开时状态区整体下移量 = 额度面板高 + 面板间缝隙。
+
+        额度画成独立面板悬浮在上方（水平错位 + 反向切角），
+        窗口顶边向上扩展（底边锚定），状态面板屏幕绝对位置不变。"""
+        return (self._quota_panel_h() + GAP) if self._quota_open else 0
 
     def _recalc_size(self):
-        # 展开时顶部叠加额度内容（底边锚定向上扩展），状态区下移补偿
+        # 展开时顶部叠加额度面板 + 缝隙（底边锚定向上扩展）
         h = self._offset() + self._status_h() + M
         old_h = self.height()
         self.setFixedSize(HUD_W, h)
@@ -200,40 +208,58 @@ class StatusHud(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        w, h = self.width(), self.height()
-        path = self._panel_path(w, h)
-
-        # 面板底色 + 霓虹描边
-        p.fillPath(path, QColor(PANEL_BG))
-        p.setPen(QPen(QColor(PANEL_EDGE), 1))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPath(path)
-
-        # 扫描线纹理（裁剪进切角面板）
-        p.save()
-        p.setClipPath(path)
-        p.setPen(QPen(QColor(255, 255, 255, 8), 1))
-        for y in range(0, h, 3):
-            p.drawLine(0, y, w, y)
-        p.restore()
+        w = self.width()
 
         if self._quota_open:
-            self._paint_quota_content(p)   # 展开内容画在面板最顶部
-        self._paint_header(p)              # 以下全部带 offset：屏幕位置不随展开变化
+            # ─── 额度面板（独立悬浮块：左上切角 + 水平错位） ───
+            qh = self._quota_panel_h()
+            qpath = self._panel_path(HUD_W - 2 * QUOTA_INSET, qh,
+                                     x=QUOTA_INSET, y=0, corner_tl=True)
+            self._paint_panel_base(p, qpath, PANEL_BG_2)
+            self._paint_quota_content(p)
+            # 面板缝隙间的能量连接线
+            gy0 = qh
+            p.setPen(QPen(QColor(FAINT), 1, Qt.PenStyle.DashLine))
+            p.drawLine(HUD_W // 2, gy0 + 1, HUD_W // 2, gy0 + GAP - 1)
+
+        # ─── 状态面板（主面板：右上切角） ───
+        spath = self._panel_path(w, self._status_h() + M, y=self._offset())
+        self._paint_panel_base(p, spath, PANEL_BG)
+        self._paint_header(p)
         self._paint_quota_toggle(p)
         self._paint_slots(p)
         self._paint_footer(p)
         p.end()
 
+    def _paint_panel_base(self, p, path: QPainterPath, bg: str):
+        """面板底色 + 描边 + 扫描线纹理（裁剪进面板形状）。"""
+        p.fillPath(path, QColor(bg))
+        p.setPen(QPen(QColor(PANEL_EDGE), 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        p.save()
+        p.setClipPath(path)
+        p.setPen(QPen(QColor(255, 255, 255, 8), 1))
+        for y in range(int(path.boundingRect().top()), int(path.boundingRect().bottom()) + 1, 3):
+            p.drawLine(int(path.boundingRect().left()), y, int(path.boundingRect().right()), y)
+        p.restore()
+
     @staticmethod
-    def _panel_path(w, h) -> QPainterPath:
-        """右上角 45° 切角的多边形面板。"""
+    def _panel_path(w, h, x=0.0, y=0.0, corner=CORNER, corner_tl=False) -> QPainterPath:
+        """切角面板路径。corner_tl=True 时切左上角（额度面板），否则切右上角。"""
         path = QPainterPath()
-        path.moveTo(0.5, 0.5)
-        path.lineTo(w - 0.5 - CORNER, 0.5)
-        path.lineTo(w - 0.5, 0.5 + CORNER)
-        path.lineTo(w - 0.5, h - 0.5)
-        path.lineTo(0.5, h - 0.5)
+        if corner_tl:
+            path.moveTo(x + 0.5 + corner, y + 0.5)
+            path.lineTo(x + w - 0.5, y + 0.5)
+            path.lineTo(x + w - 0.5, y + h - 0.5)
+            path.lineTo(x + 0.5, y + h - 0.5)
+            path.lineTo(x + 0.5, y + 0.5 + corner)
+        else:
+            path.moveTo(x + 0.5, y + 0.5)
+            path.lineTo(x + w - 0.5 - corner, y + 0.5)
+            path.lineTo(x + w - 0.5, y + 0.5 + corner)
+            path.lineTo(x + w - 0.5, y + h - 0.5)
+            path.lineTo(x + 0.5, y + h - 0.5)
         path.closeSubpath()
         return path
 
@@ -382,14 +408,16 @@ class StatusHud(QWidget):
                        f"{q.token_5h_pct:.0f}%")
 
     def _paint_quota_content(self, p):
-        """展开内容：面板最顶部（窗口向上长出的部分）。"""
+        """额度面板内容：画在独立悬浮面板内（水平随面板内缩）。"""
+        qx = M + QUOTA_INSET
+        qw = HUD_W - 2 * qx
         y = M
         q = self._quota
 
         if not self._has_quota_data():
             p.setFont(_mono_font(9))
             p.setPen(QColor(DIM))
-            p.drawText(QRectF(M, y, HUD_W - 2 * M, Q_ROW_LABEL + 4),
+            p.drawText(QRectF(qx, y, qw, Q_ROW_LABEL + 4),
                        Qt.AlignmentFlag.AlignCenter, "· NO QUOTA DATA ·")
             y += Q_ROW_LABEL + 4
         else:
@@ -399,7 +427,7 @@ class StatusHud(QWidget):
             if q.token_weekly_pct is not None:
                 bars.append(("WEEKLY", q.token_weekly_pct, q.token_weekly_reset))
             for i, (label, pct, reset) in enumerate(bars):
-                y = self._paint_quota_bar(p, y, label, pct, reset)
+                y = self._paint_quota_bar(p, y, label, pct, reset, qx, qw)
                 if i < len(bars) - 1:
                     y += 8
 
@@ -408,9 +436,9 @@ class StatusHud(QWidget):
             f9 = _mono_font(9)
             p.setFont(f9)
             fm = QFontMetrics(f9)
-            txt = fm.elidedText(f"ERR: {q.error}", Qt.TextElideMode.ElideRight, HUD_W - 2 * M)
+            txt = fm.elidedText(f"ERR: {q.error}", Qt.TextElideMode.ElideRight, qw)
             p.setPen(QColor(ERROR))
-            p.drawText(QRectF(M, y, HUD_W - 2 * M, 12),
+            p.drawText(QRectF(qx, y, qw, 12),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, txt)
             y += 14
 
@@ -420,28 +448,28 @@ class StatusHud(QWidget):
             f8 = _mono_font(8)
             p.setFont(f8)
             fm = QFontMetrics(f8)
-            txt = fm.elidedText(" · ".join(notes), Qt.TextElideMode.ElideRight, HUD_W - 2 * M)
+            txt = fm.elidedText(" · ".join(notes), Qt.TextElideMode.ElideRight, qw)
             p.setPen(QColor(DIM))
-            p.drawText(QRectF(M, y, HUD_W - 2 * M, 11),
+            p.drawText(QRectF(qx, y, qw, 11),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, txt)
 
-    def _paint_quota_bar(self, p, y, label, pct, reset):
+    def _paint_quota_bar(self, p, y, label, pct, reset, qx, qw):
         color = _theme_bar_color(pct)
 
         # 标签 + 百分比
         f9 = _mono_font(9, QFont.Weight.Bold, 140)
         p.setFont(f9)
         p.setPen(QColor(DIM))
-        p.drawText(QRectF(M, y, HUD_W - 2 * M, Q_ROW_LABEL),
+        p.drawText(QRectF(qx, y, qw, Q_ROW_LABEL),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, label)
         p.setFont(_mono_font(10, QFont.Weight.Bold))
         p.setPen(color)
-        p.drawText(QRectF(M, y, HUD_W - 2 * M, Q_ROW_LABEL),
+        p.drawText(QRectF(qx, y, qw, Q_ROW_LABEL),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, f"{pct:.0f}%")
         y += Q_ROW_LABEL + 2
 
-        # 分段方块进度条（与旧版额度弹窗同款：24 段，余量色阶）
-        bar_rect = QRectF(M, y, HUD_W - 2 * M, Q_ROW_BAR)
+        # 分段方块进度条（24 段，余量色阶）
+        bar_rect = QRectF(qx, y, qw, Q_ROW_BAR)
         gap = 2
         seg_w = (bar_rect.width() - gap * (Q_SEGMENTS - 1)) / Q_SEGMENTS
         filled = round(pct / 100 * Q_SEGMENTS)
@@ -456,7 +484,7 @@ class StatusHud(QWidget):
         if reset:
             p.setFont(_mono_font(8))
             p.setPen(QColor(DIM))
-            p.drawText(QRectF(M, y, HUD_W - 2 * M, Q_ROW_RESET),
+            p.drawText(QRectF(qx, y, qw, Q_ROW_RESET),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                        self._fmt_reset(reset))
         y += Q_ROW_RESET
