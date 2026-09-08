@@ -80,7 +80,6 @@ class StatusHud(QWidget):
         self._payload = None
         self._quota: UsageData = None
         self._quota_open = False          # 默认只显示状态
-        self._quota_toggle_rect = None    # 折叠条命中区域
         self._slots = 3
         self._frame = 0
         self._drag_pos = None
@@ -189,11 +188,15 @@ class StatusHud(QWidget):
         # 展开时顶部叠加额度面板 + 缝隙（底边锚定向上扩展）
         h = self._offset() + self._status_h() + M
         old_h = self.height()
-        self.setFixedSize(HUD_W, h)
-        # 底边锚定：高度变化时顶边向上/向下补偿，
-        # 面板贴右下角放置时展开不会伸出屏幕底
         if old_h > 0 and h != old_h and self.isVisible():
-            self.move(self.x(), self.y() - (h - old_h))
+            # 一次 setGeometry 同时完成 resize+move：分两次调用会暴露
+            # 中间帧（旧窗口尺寸闪现）。
+            self.setMinimumSize(0, 0)
+            self.setMaximumSize(16777215, 16777215)
+            self.setGeometry(self.x(), self.y() - (h - old_h), HUD_W, h)
+            self.setFixedSize(HUD_W, h)
+        else:
+            self.setFixedSize(HUD_W, h)
 
     def _on_tick(self):
         self._frame = (self._frame + 1) % 4
@@ -208,7 +211,13 @@ class StatusHud(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        w = self.width()
+        w, h = self.width(), self.height()
+
+        # 先清成全透明：translucent 窗口 resize 后首帧可能残留 DWM 旧帧
+        # （表现为收起时额度面板在底图上闪现），显式清底根治。
+        p.setCompositionMode(QPainter.CompositionMode_Clear)
+        p.fillRect(0, 0, w, h, Qt.transparent)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
 
         if self._quota_open:
             # ─── 额度面板（独立悬浮块：左上切角 + 水平错位） ───
@@ -386,11 +395,14 @@ class StatusHud(QWidget):
 
     # ─── 额度区 ───
 
+    def _toggle_rect(self) -> QRectF:
+        """折叠条矩形（窗口坐标，实时计算，绘制与命中共用同一来源）。"""
+        return QRectF(M, self._toggle_top() + self._offset(),
+                      HUD_W - 2 * M, QUOTA_TOGGLE_H)
+
     def _paint_quota_toggle(self, p):
         """折叠条（按钮）：头部正下方常驻（含 offset 后屏幕位置固定）。▾/▸ QUOTA + 5h%"""
-        y = self._toggle_top() + self._offset()
-        toggle = QRectF(M, y, HUD_W - 2 * M, QUOTA_TOGGLE_H)
-        self._quota_toggle_rect = toggle
+        toggle = self._toggle_rect()
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(SLOT_BG))
         p.drawRoundedRect(toggle, 2, 2)
@@ -513,9 +525,9 @@ class StatusHud(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             pos = event.position().toPoint()
-            # 命中额度折叠条 → 切换展开/收起（不启动拖拽）
-            if self._quota_toggle_rect is not None and \
-                    self._quota_toggle_rect.contains(QPointF(pos)):
+            # 命中额度折叠条 → 切换展开/收起（不启动拖拽）；实时计算矩形，
+            # 避免切换后未重绘期间用过期矩形误命中
+            if self._toggle_rect().contains(QPointF(pos)):
                 self.toggle_quota()
                 event.accept()
                 return
@@ -535,8 +547,7 @@ class StatusHud(QWidget):
             return
         pos = event.position().toPoint()
         # 单击折叠条已 toggle 一次，双击再 toggle 会"开了又关"——直接吞掉
-        if self._quota_toggle_rect is not None and \
-                self._quota_toggle_rect.contains(QPointF(pos)):
+        if self._toggle_rect().contains(QPointF(pos)):
             event.accept()
             return
         self.toggle_quota()
