@@ -1,7 +1,7 @@
 """Agent 状态监控：opencode 日志目录 + DSH 会话目录双源聚合。
 
 - opencode：增量 tail *.log（LogTailer，10 分钟活跃阈值）
-- DSH：轮询 ~/.dsh/sessions/**/session.jsonl.zstd，文件变化时全量重解析
+- DSH：轮询 ~/.dsh/sessions/**/session*.jsonl.zstd，文件变化时全量重解析
   （zstd 多 frame 追加）。有未决提问/审批的会话即使日志陈旧也保持关注，
   避免"正在等你回答"的会话因 10 分钟无写入而消失。
 
@@ -150,14 +150,15 @@ class WatcherWorker(QObject):
     # ─── DSH 源 ───
 
     def _scan_dsh(self):
-        """返回 (session.jsonl.zstd 路径 -> mtime) 字典；递归扫描。"""
+        """返回 (会话 zstd 路径 -> mtime) 字典；递归扫描。"""
         out = {}
         if not self._dsh_dir or not os.path.isdir(self._dsh_dir):
             return out
         now = time.time()
         for root, _dirs, files in os.walk(self._dsh_dir):
             for name in files:
-                if name != "session.jsonl.zstd":
+                # 兼容新旧命名：session.jsonl.zstd（旧）/ session.v3.jsonl.zstd（新）
+                if not (name.startswith("session") and name.endswith(".jsonl.zstd")):
                     continue
                 p = os.path.join(root, name)
                 try:
